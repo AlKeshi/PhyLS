@@ -1,0 +1,849 @@
+# dashboard.py
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+# Import strategies and utility functions
+from phy_sec_simulation.strategies import strategy_1, strategy_1_2, strategy_2_constant_inst_power, strategy_3_1, strategy_3_2
+from phy_sec_simulation.strategies.utils import snr_to_total_power # Assuming this is the correct import for P_total from SNR
+
+# --- App State Initialization ---
+if 'configurations_to_plot' not in st.session_state:
+    st.session_state.configurations_to_plot = []
+
+# --- Helper Functions (Mocks) ---
+def get_available_strategies():
+    """Returns a list of available strategy names from the project."""
+    # These names should match the function names imported above
+    return [
+        "strategy_1",
+        "strategy_1_2",
+        "strategy_2_constant_inst_power",
+        "strategy_3_1",
+        "strategy_3_2"
+    ]
+
+def run_strategy_simulation(strategy_name, num_antennas, alpha, snr_db_range, sigma_n_sq, M_g_sims, R_thresh):
+    """
+    Runs a strategy simulation using actual project functions.
+    Returns a dictionary with 'snr_db' and 'performance_metric' (Secrecy Rate R_s).
+    """
+    performance = []
+    
+    # Dynamically get the strategy function
+    strategy_func = globals().get(strategy_name)
+    if not strategy_func:
+        st.error(f"Strategy function {strategy_name} not found!")
+        return {"snr_db": list(snr_db_range), "performance_metric": [0]*len(snr_db_range)}
+
+    for snr_db in snr_db_range:
+        P_total = snr_to_total_power(snr_db, sigma_n_sq) # Calculate P_total based on current SNR and sigma_n_sq
+        
+        # Call the selected strategy function
+        # Note: Ensure all strategy functions have a compatible signature
+        # or add logic here to adapt parameters.
+        # Based on strategy_3_2, the signature is (P_total, N, alpha, sigma_n_sq_val, M_g_sims, R_thresh)
+        # For now, we assume all strategies use this. This might need adjustment.
+        try:
+            R_s, _ = strategy_func( # We only need R_s for the plot
+                P_total=P_total,
+                N=num_antennas,
+                alpha=alpha,
+                sigma_n_sq_val=sigma_n_sq,
+                M_g_sims=M_g_sims,
+                R_thresh=R_thresh
+            )
+            performance.append(R_s)
+        except Exception as e:
+            st.warning(f"Error running {strategy_name} for SNR {snr_db}dB: {e}")
+            performance.append(0) # Append 0 or NaN on error
+        
+    return {"snr_db": list(snr_db_range), "performance_metric": performance}
+
+# --- Sidebar for Inputs ---
+st.sidebar.header("Simulation Parameters")
+
+selected_strategy = st.sidebar.selectbox(
+    "Select Strategy:",
+    options=get_available_strategies(),
+    key="selected_strategy"
+)
+
+num_antennas = st.sidebar.slider(
+    "Number of Antennas (M):",
+    min_value=2,
+    max_value=64,
+    value=8,
+    step=2,
+    key="num_antennas"
+)
+
+alpha = st.sidebar.slider(
+    "Alpha (α):",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.5,
+    step=0.05,
+    key="alpha"
+)
+
+st.sidebar.markdown("---") # Separator
+
+st.sidebar.subheader("Channel & Simulation Settings")
+
+sigma_n_sq = st.sidebar.number_input(
+    "Noise Variance (σ_n²):",
+    min_value=0.001,
+    max_value=10.0,
+    value=1.0,
+    step=0.01,
+    format="%.3f",
+    key="sigma_n_sq"
+)
+
+M_g_sims = st.sidebar.number_input(
+    "Eve Channel Simulations (M_g_sims):",
+    min_value=1,
+    max_value=10000,
+    value=100, # Defaulting to 100, adjust as needed
+    step=10,
+    key="M_g_sims"
+)
+
+R_thresh = st.sidebar.number_input(
+    "Secrecy Rate Threshold (R_th):",
+    min_value=0.0,
+    max_value=10.0,
+    value=0.1, # Defaulting to 0.1, adjust as needed
+    step=0.05,
+    key="R_thresh"
+)
+
+if st.sidebar.button("Add Configuration to Plot", key="add_config"):
+    config = {
+        "strategy": st.session_state.selected_strategy,
+        "antennas": st.session_state.num_antennas,
+        "alpha": st.session_state.alpha,
+        "sigma_n_sq": st.session_state.sigma_n_sq, # Add new params
+        "M_g_sims": st.session_state.M_g_sims,     # Add new params
+        "R_thresh": st.session_state.R_thresh,     # Add new params
+        "id": f"{st.session_state.selected_strategy}_M{st.session_state.num_antennas}_alpha{st.session_state.alpha}_sig{st.session_state.sigma_n_sq}_Mg{st.session_state.M_g_sims}_Rth{st.session_state.R_thresh}_{len(st.session_state.configurations_to_plot)}"
+    }
+    # Avoid adding exact duplicates if desired, though for now we allow it for multiple runs of same params
+    st.session_state.configurations_to_plot.append(config)
+
+st.sidebar.header("Configurations to Plot")
+if not st.session_state.configurations_to_plot:
+    st.sidebar.info("Add configurations using the controls above to see them plotted.")
+else:
+    for i, config in enumerate(st.session_state.configurations_to_plot):
+        label = f"{i+1}. {config['strategy']} (M={config['antennas']}, α={config['alpha']}, σ_n²={config['sigma_n_sq']}, M_g={config['M_g_sims']}, R_th={config['R_thresh']})"
+        st.sidebar.markdown(label)
+    if st.sidebar.button("Clear All Configurations", key="clear_configs"):
+        st.session_state.configurations_to_plot = []
+        st.rerun()
+
+# --- Main Panel for Plotting ---
+st.header("Performance Dashboard")
+
+if not st.session_state.configurations_to_plot:
+    st.info("Please add one or more configurations from the sidebar to generate a plot.")
+else:
+    st.subheader("Performance Comparison")
+    
+    snr_db_min = st.slider("Min SNR (dB) for plot:", -10, 20, 0, key="snr_min")
+    snr_db_max = st.slider("Max SNR (dB) for plot:", snr_db_min + 5, 30, 20, key="snr_max")
+    snr_db_steps = st.number_input("Number of SNR steps:", 5, 50, 10, key="snr_steps")
+
+    snr_range = np.linspace(snr_db_min, snr_db_max, int(snr_db_steps)) # Ensure snr_db_steps is int for linspace
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    all_plot_data = []
+
+    for config in st.session_state.configurations_to_plot:
+        simulation_results = run_strategy_simulation(
+            config["strategy"],
+            config["antennas"],
+            config["alpha"],
+            snr_range,
+            config["sigma_n_sq"], # Pass new param
+            config["M_g_sims"],   # Pass new param
+            config["R_thresh"]    # Pass new param
+        )
+        label = f"{config['strategy']} (M={config['antennas']}, α={config['alpha']}, σ_n²={config['sigma_n_sq']}, M_g={config['M_g_sims']}, R_th={config['R_thresh']})"
+        ax.plot(simulation_results["snr_db"], simulation_results["performance_metric"], marker='o', linestyle='-', markersize=5, label=label)
+        
+        # For table display
+        for i in range(len(simulation_results["snr_db"])):
+            all_plot_data.append({
+                "Configuration": label,
+                "Strategy": config["strategy"],
+                "Antennas (M)": config["antennas"],
+                "Alpha (α)": config["alpha"],
+                "Sigma_n_sq (σ_n²)": config["sigma_n_sq"], # Add to table
+                "M_g_sims": config["M_g_sims"],           # Add to table
+                "R_thresh": config["R_thresh"],           # Add to table
+                "SNR (dB)": simulation_results["snr_db"][i],
+                "Performance (R_s)": simulation_results["performance_metric"][i] # Updated metric name
+            })
+
+    ax.set_xlabel("SNR (dB)")
+    ax.set_ylabel("Secrecy Rate (R_s)") # Updated y-axis label
+    ax.set_title("Strategy Performance Comparison - Secrecy Rate vs SNR")
+    ax.legend(loc='best', fontsize='small') # Adjust legend
+    ax.grid(True)
+    st.pyplot(fig)
+
+    if all_plot_data:
+        st.subheader("Detailed Data")
+        df_results = pd.DataFrame(all_plot_data)
+        st.dataframe(df_results)
+
+st.markdown("---")
+st.markdown("Dashboard using strategies from `phy_sec_simulation.strategies`.") 
+
+# ous.py
+import os
+
+def extract_python_code(root_folder, output_file="codes.txt"):
+    with open(output_file, "w", encoding="utf-8") as out_file:
+        for dirpath, _, filenames in os.walk(root_folder):
+            for filename in filenames:
+                if filename.endswith(".py"):
+                    file_path = os.path.join(dirpath, filename)
+                    relative_path = os.path.relpath(file_path, root_folder)
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as py_file:
+                            code = py_file.read()
+                        out_file.write(f"# {relative_path}\n")
+                        out_file.write(code + "\n\n")
+                    except Exception as e:
+                        print(f"Could not read {file_path}: {e}")
+
+if __name__ == "__main__":
+    current_folder = os.getcwd()  # folder where script is run
+    extract_python_code(current_folder)
+
+
+# phy_sec_simulation\config.py
+import numpy as np
+
+# Common Simulation Parameters
+N_ANTENNAS = 10  # Number of antennas at Alice
+ALPHA_VAL = 0.5  # Power allocation factor for w
+SIGMA_N_SQ = 1.0  # Natural noise variance
+R_THRESHOLD = 3  # Constant threshold rate for outage probability
+M_MONTE_CARLO_G = 1000  # Number of Monte Carlo simulations for g (Eve's channel)
+M_MONTE_CARLO_H = 1000 # Number of Monte Carlo simulations for h (Bob's channel)
+SNR_DB_RANGE = np.arange(-5, 21, 1) # SNR range in dB 
+
+# phy_sec_simulation\main.py
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+import config
+# import strategies # Old import
+from strategies import strategy_1, strategy_1_2, strategy_2_constant_inst_power, strategy_3_1, strategy_3_2, snr_to_total_power # New import
+
+def run_simulation():
+    avg_secrecy_rates_s1 = []
+    outage_probs_s1 = [] 
+
+    avg_secrecy_rates_s1_2 = []
+    outage_probs_s1_2 = []
+
+    avg_secrecy_rates_s2 = []
+    outage_probs_s2 = []
+
+    avg_secrecy_rates_s3_1 = []
+    outage_probs_s3_1 = []
+
+    avg_secrecy_rates_s3_2 = []
+    outage_probs_s3_2 = []
+
+    print("Starting simulation...")
+    for snr_db in config.SNR_DB_RANGE:
+        P = snr_to_total_power(snr_db, config.SIGMA_N_SQ) # Updated usage
+        
+        current_snr_secrecy_s1 = []
+        current_snr_outage_events_s1 = []
+        
+        current_snr_secrecy_s1_2 = []
+        current_snr_outage_events_s1_2 = []
+
+        current_snr_secrecy_s2 = []
+        current_snr_outage_events_s2 = []
+
+        current_snr_secrecy_s3_1 = []
+        current_snr_outage_events_s3_1 = []
+
+        current_snr_secrecy_s3_2 = []
+        current_snr_outage_events_s3_2 = []
+
+        for i in range(config.M_MONTE_CARLO_H):
+            # Strategy 1
+            rs_s1, event_s1 = strategy_1( # Updated usage
+                P, config.N_ANTENNAS, config.ALPHA_VAL, 
+                config.SIGMA_N_SQ, config.M_MONTE_CARLO_G, config.R_THRESHOLD
+            )
+            current_snr_secrecy_s1.append(rs_s1)
+            current_snr_outage_events_s1.append(event_s1)
+            
+            # Strategy 1.2
+            rs_s1_2, event_s1_2 = strategy_1_2( # Updated usage
+                P, config.N_ANTENNAS, config.ALPHA_VAL, 
+                config.SIGMA_N_SQ, config.M_MONTE_CARLO_G, config.R_THRESHOLD
+            )
+            current_snr_secrecy_s1_2.append(rs_s1_2)
+            current_snr_outage_events_s1_2.append(event_s1_2)
+
+            # Strategy 2
+            rs_s2, event_s2 = strategy_2_constant_inst_power(
+                P, config.N_ANTENNAS, config.ALPHA_VAL, 
+                config.SIGMA_N_SQ, config.M_MONTE_CARLO_G, config.R_THRESHOLD
+            )
+            current_snr_secrecy_s2.append(rs_s2)
+            current_snr_outage_events_s2.append(event_s2)
+
+            # Strategy 3.1
+            rs_s3_1, event_s3_1 = strategy_3_1(
+                P, config.N_ANTENNAS, config.ALPHA_VAL, 
+                config.SIGMA_N_SQ, config.M_MONTE_CARLO_G, config.R_THRESHOLD
+            )
+            current_snr_secrecy_s3_1.append(rs_s3_1)
+            current_snr_outage_events_s3_1.append(event_s3_1)
+
+            # Strategy 3.2
+            rs_s3_2, event_s3_2 = strategy_3_2(
+                P, config.N_ANTENNAS, config.ALPHA_VAL, 
+                config.SIGMA_N_SQ, config.M_MONTE_CARLO_G, config.R_THRESHOLD
+            )
+            current_snr_secrecy_s3_2.append(rs_s3_2)
+            current_snr_outage_events_s3_2.append(event_s3_2)
+            
+            if (i + 1) % (config.M_MONTE_CARLO_H // 10) == 0: 
+                 if config.M_MONTE_CARLO_H >= 10 : # Avoid division by zero if M_MONTE_CARLO_H < 10
+                    print(f"  SNR: {snr_db} dB, Monte Carlo for h: {i+1}/{config.M_MONTE_CARLO_H}")
+                 elif i == config.M_MONTE_CARLO_H -1: # Print at the end for small M_MONTE_CARLO_H
+                    print(f"  SNR: {snr_db} dB, Monte Carlo for h: {i+1}/{config.M_MONTE_CARLO_H}")
+
+        avg_secrecy_rates_s1.append(np.mean(current_snr_secrecy_s1 if current_snr_secrecy_s1 else [0]))
+        outage_probs_s1.append(np.mean(current_snr_outage_events_s1 if current_snr_outage_events_s1 else [0]))
+        
+        avg_secrecy_rates_s1_2.append(np.mean(current_snr_secrecy_s1_2 if current_snr_secrecy_s1_2 else [0]))
+        outage_probs_s1_2.append(np.mean(current_snr_outage_events_s1_2 if current_snr_outage_events_s1_2 else [0]))
+
+        avg_secrecy_rates_s2.append(np.mean(current_snr_secrecy_s2 if current_snr_secrecy_s2 else [0]))
+        outage_probs_s2.append(np.mean(current_snr_outage_events_s2 if current_snr_outage_events_s2 else [0]))
+
+        avg_secrecy_rates_s3_1.append(np.mean(current_snr_secrecy_s3_1 if current_snr_secrecy_s3_1 else [0]))
+        outage_probs_s3_1.append(np.mean(current_snr_outage_events_s3_1 if current_snr_outage_events_s3_1 else [0]))
+
+        avg_secrecy_rates_s3_2.append(np.mean(current_snr_secrecy_s3_2 if current_snr_secrecy_s3_2 else [0]))
+        outage_probs_s3_2.append(np.mean(current_snr_outage_events_s3_2 if current_snr_outage_events_s3_2 else [0]))
+
+        print(f"SNR: {snr_db} dB processed. S1: Rs={avg_secrecy_rates_s1[-1]:.2f}, P(>R)={outage_probs_s1[-1]:.2f} | "
+              f"S1.2: Rs={avg_secrecy_rates_s1_2[-1]:.2f}, P(>R)={outage_probs_s1_2[-1]:.2f} | "
+              f"S2: Rs={avg_secrecy_rates_s2[-1]:.2f}, P(>R)={outage_probs_s2[-1]:.2f} | "
+              f"S3.1: Rs={avg_secrecy_rates_s3_1[-1]:.2f}, P(>R)={outage_probs_s3_1[-1]:.2f} | "
+              f"S3.2: Rs={avg_secrecy_rates_s3_2[-1]:.2f}, P(>R)={outage_probs_s3_2[-1]:.2f}")
+    
+    print("Simulation finished.")
+    return (avg_secrecy_rates_s1, outage_probs_s1, 
+            avg_secrecy_rates_s1_2, outage_probs_s1_2, 
+            avg_secrecy_rates_s2, outage_probs_s2,
+            avg_secrecy_rates_s3_1, outage_probs_s3_1,
+            avg_secrecy_rates_s3_2, outage_probs_s3_2)
+
+def plot_results(snr_db_range, 
+                 avg_secrecy_s1, outage_s1, 
+                 avg_secrecy_s1_2, outage_s1_2, 
+                 avg_secrecy_s2, outage_s2,
+                 avg_secrecy_s3_1, outage_s3_1,
+                 avg_secrecy_s3_2, outage_s3_2):
+    print("Plotting results...")
+    plt.figure(figsize=(14, 6))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(snr_db_range, avg_secrecy_s1, marker='o', linestyle='-', label='Strategy 1')
+    plt.plot(snr_db_range, avg_secrecy_s1_2, marker='x', linestyle='--', label='Strategy 1.2')
+    plt.plot(snr_db_range, avg_secrecy_s2, marker='s', linestyle=':', label='Strategy 2')
+    plt.plot(snr_db_range, avg_secrecy_s3_1, marker='^', linestyle='-.', label='Strategy 3.1')
+    plt.plot(snr_db_range, avg_secrecy_s3_2, marker='d', linestyle='-', label='Strategy 3.2') # Consider a different linestyle if overlapping with S1
+    plt.title(f'Average Secrecy Rate (N={config.N_ANTENNAS}, alpha={config.ALPHA_VAL})')
+    plt.xlabel('SNR (dB)')
+    plt.ylabel('Average Secrecy Rate (bits/s/Hz)')
+    plt.grid(True)
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(snr_db_range, outage_s1, marker='o', linestyle='-', label='Strategy 1')
+    plt.plot(snr_db_range, outage_s1_2, marker='x', linestyle='--', label='Strategy 1.2')
+    plt.plot(snr_db_range, outage_s2, marker='s', linestyle=':', label='Strategy 2')
+    plt.plot(snr_db_range, outage_s3_1, marker='^', linestyle='-.', label='Strategy 3.1')
+    plt.plot(snr_db_range, outage_s3_2, marker='d', linestyle='-', label='Strategy 3.2') # Consider a different linestyle
+    plt.title(f'P(Rs > R={config.R_THRESHOLD}) (N={config.N_ANTENNAS}, alpha={config.ALPHA_VAL})')
+    plt.xlabel('SNR (dB)')
+    plt.ylabel(f'P(Rs > R={config.R_THRESHOLD})') 
+    plt.grid(True)
+    plt.legend()
+
+    plt.tight_layout()
+    
+    results_dir = 'results'
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+    
+    plot_filename = os.path.join(results_dir, f'comparison_N{config.N_ANTENNAS}_alpha{config.ALPHA_VAL}_M{config.M_MONTE_CARLO_H}.png')
+    plt.savefig(plot_filename)
+    print(f"Plot saved to {plot_filename}")
+    plt.show()
+
+if __name__ == "__main__":
+    s1_rs, s1_out, \
+    s1_2_rs, s1_2_out, \
+    s2_rs, s2_out, \
+    s3_1_rs, s3_1_out, \
+    s3_2_rs, s3_2_out = run_simulation()
+    
+    plot_results(
+        config.SNR_DB_RANGE, 
+        s1_rs, s1_out, 
+        s1_2_rs, s1_2_out,
+        s2_rs, s2_out,
+        s3_1_rs, s3_1_out,
+        s3_2_rs, s3_2_out
+    ) 
+
+# phy_sec_simulation\strategies\constant_power.py
+import numpy as np
+from scipy.linalg import null_space
+from .utils import generate_channel_vector
+
+def strategy_1(P_total, N, alpha, sigma_n_sq_val, M_g_sims, R_thresh):
+    """
+    Implements Strategy 1: Constant Power Allocation.
+    Returns instantaneous secrecy rate and outage event (1 if R_s > R_thresh, 0 otherwise).
+    """
+    h = generate_channel_vector(N)
+    h_H = h.conj().T
+    h_norm_sq = np.abs(np.vdot(h, h))
+
+    if h_norm_sq < 1e-9:
+        return 0.0, 0
+
+    lambda_val = 2 * (N - 1) * alpha * P_total
+    mu_val = P_total - lambda_val/(2*(N-1))
+
+    w = np.sqrt(lambda_val) * (h / h_norm_sq)
+
+    if N > 1:
+        gamma_basis = null_space(h_H)
+        # Ensure gamma_basis has enough columns if N > 1
+        if gamma_basis.shape[1] < (N - 1) and N -1 > 0: # Should not happen if h is not zero vector for N > 1
+             # This case implies h might be nearly zero or some numerical issue, 
+             # effectively no real null-space to work with for AN of desired dimension.
+             z = np.zeros((N,1))
+        elif gamma_basis.shape[1] == 0 and N > 1: # N > 1 but null space is 0-dim (e.g. if h was a full rank matrix instead of vector)
+            z = np.zeros((N,1))
+        else: 
+            v_for_gamma_v = (np.random.randn(N - 1, 1) + 1j * np.random.randn(N - 1, 1)) / np.sqrt(2)
+            gamma_v = gamma_basis @ v_for_gamma_v
+            norm_gamma_v = np.linalg.norm(gamma_v)
+            z = np.sqrt(mu_val) * (gamma_v / norm_gamma_v) if norm_gamma_v > 1e-9 else np.zeros((N, 1))
+    else: # N=1
+        z = np.zeros((N, 1))
+
+    signal_power_bob = np.abs(h_H @ w)**2
+    R_b = np.log2(1 + signal_power_bob / sigma_n_sq_val)
+
+    R_s = 0.0 # Default R_s
+    R_e_sum = 0.0
+    if np.linalg.norm(w) < 1e-9:
+        R_s = 0.0
+    elif (N > 1 and np.linalg.norm(z) < 1e-9) or N == 1: # No artificial noise contribution or N=1
+        for _ in range(M_g_sims):
+            g = generate_channel_vector(N)
+            g_H = g.conj().T
+            signal_power_eve = np.abs(g_H @ w)**2
+            R_e_sum += np.log2(1 + signal_power_eve / sigma_n_sq_val)
+    else: # General case with AN (N > 1 and z is non-zero)
+        for _ in range(M_g_sims):
+            g = generate_channel_vector(N)
+            g_H = g.conj().T
+            signal_power_eve = np.abs(g_H @ w)**2
+            noise_power_eve = np.abs(g_H @ z)**2 + sigma_n_sq_val
+            R_e_sum += np.log2(1 + signal_power_eve / (noise_power_eve if noise_power_eve > 1e-9 else 1e-9))
+    
+    if np.linalg.norm(w) >= 1e-9: 
+        R_e = R_e_sum / M_g_sims if M_g_sims > 0 else 0.0
+        R_s = np.maximum(0.0, R_b - R_e)
+
+    event_rs_greater_R = 1 if R_s > R_thresh else 0 # Corrected logic for Pr(R_s > R)
+    return float(R_s), event_rs_greater_R 
+
+# phy_sec_simulation\strategies\strategy_2_constant_inst_power.py
+import numpy as np
+from scipy.linalg import null_space
+from .utils import generate_channel_vector
+
+def strategy_2_constant_inst_power(P_total, N, alpha, sigma_n_sq_val, M_g_sims, R_thresh):
+    """
+    Implements Strategy 2: Constant Power Allocation for Beamforming and Artificial Noise
+    (Constant Instantaneous Power for w and z).
+    Returns instantaneous secrecy rate and outage event (1 if R_s > R_thresh, 0 otherwise).
+    """
+    h = generate_channel_vector(N) # Channel Alice to Bob
+    h_H = h.conj().T
+    h_norm = np.linalg.norm(h)
+
+    if h_norm < 1e-9: # Avoid division by zero if h is effectively zero
+        return 0.0, 0
+
+    # Power allocation based on description_2.md
+    # lambda is power for w, mu is power for z
+    # P = lambda + mu
+    # alpha = lambda / P  => lambda = alpha * P
+    # So, mu = P - lambda = P * (1 - alpha)
+    lambda_val = alpha * P_total
+    mu_val = (1 - alpha) * P_total
+
+    # Beamforming Vector w: w = sqrt(lambda) * (h / |h|)
+    w = np.sqrt(lambda_val) * (h / h_norm)
+    # w is already a column vector (N,1)
+
+    # Artificial Noise z: z = sqrt(mu) * (gamma * v / |gamma * v|)
+    if N > 1:
+        gamma_basis = null_space(h_H) # Orthonormal basis for null space of h_H, (N, N-1)
+        
+        if gamma_basis.shape[1] < (N - 1) and N - 1 > 0:
+             z = np.zeros((N,1))
+        elif gamma_basis.shape[1] == 0 and N > 1:
+            z = np.zeros((N,1))
+        else:
+            # v is a random vector, e.g., CN(0, I_{N-1})
+            # Our generate_channel_vector(N-1) produces elements with variance 2.
+            # For CN(0, I_{N-1}), each element has variance 1. So scale by 1/sqrt(2).
+            v_rand = (np.random.randn(N - 1, 1) + 1j * np.random.randn(N - 1, 1)) / np.sqrt(2 * (N - 1))
+            
+            gamma_v = gamma_basis @ v_rand # (N, N-1) @ (N-1, 1) = (N, 1)
+            norm_gamma_v = np.linalg.norm(gamma_v)
+            
+            if norm_gamma_v > 1e-9:
+                z = np.sqrt(mu_val) * (gamma_v / norm_gamma_v)
+            else: # gamma_v is zero (e.g. if v is zero, or N=1 and gamma_basis is empty)
+                z = np.zeros((N, 1))
+    else: # N=1, null space is empty for h_H (scalar h_H means null space is {0} if h_H !=0, or C^N if h_H=0 - handled by h_norm check)
+          # If N=1, AN is not typically generated in this manner as null space is trivial.
+        z = np.zeros((N, 1))
+
+    # Bob's rate: R_b = log2(1 + |h^H w|^2 / sigma_n^2)
+    # h^H z = 0 by design of z using null space of h^H.
+    signal_power_bob = np.abs(h_H @ w)**2
+    R_b = np.log2(1 + signal_power_bob / sigma_n_sq_val)
+
+    # Eve's rate (Monte Carlo)
+    R_s = 0.0 # Default R_s
+    R_e_sum = 0.0
+    if np.linalg.norm(w) < 1e-9: # If w is zero (e.g. lambda_val is zero)
+        R_s = 0.0
+    # Check if z is effectively zero (e.g. mu_val is zero or N=1 or gamma_v became zero)
+    elif (N > 1 and np.linalg.norm(z) < 1e-9) or N == 1:
+        for _ in range(M_g_sims):
+            g = generate_channel_vector(N) # Channel Alice to Eve
+            g_H = g.conj().T
+            signal_power_eve = np.abs(g_H @ w)**2
+            R_e_sum += np.log2(1 + signal_power_eve / sigma_n_sq_val)
+    else: # General case with AN (N > 1 and z is non-zero)
+        for _ in range(M_g_sims):
+            g = generate_channel_vector(N)
+            g_H = g.conj().T
+            signal_power_eve = np.abs(g_H @ w)**2
+            noise_power_eve = np.abs(g_H @ z)**2 + sigma_n_sq_val
+            R_e_sum += np.log2(1 + signal_power_eve / (noise_power_eve if noise_power_eve > 1e-9 else 1e-9))
+    
+    if np.linalg.norm(w) >= 1e-9:
+        R_e = R_e_sum / M_g_sims if M_g_sims > 0 else 0.0
+        R_s = np.maximum(0.0, R_b - R_e)
+
+    event_rs_greater_R = 1 if R_s > R_thresh else 0
+    return float(R_s), event_rs_greater_R 
+
+# phy_sec_simulation\strategies\strategy_3_1.py
+import numpy as np
+from scipy.linalg import null_space
+from .utils import generate_channel_vector
+
+def strategy_3_1(P_total, N, alpha, sigma_n_sq_val, M_g_sims, R_thresh):
+    """
+    Implements Strategy 3.1.
+    Beamforming w = sqrt(lambda) * h
+    Artificial Noise z = sqrt(mu) * gamma_v / ||gamma_v||
+    E[|w|^2] = alpha * P_total
+    E[|z|^2] = (1 - alpha) * P_total
+    h is from generate_channel_vector, so E[|h|^2] = 2N
+    lambda_val = alpha * P_total / (2N)
+    mu_val = (1-alpha) * P_total
+    """
+    h = generate_channel_vector(N) # Shape (N, 1), E[|h|^2] = 2N
+    h_H = h.conj().T # Shape (1, N)
+    h_norm_sq = np.abs(np.vdot(h, h)) # Scalar, |h|^2
+
+    if h_norm_sq < 1e-9 or N == 0: # N=0 check for robustness
+        return 0.0, 0
+    
+    # Adjust for N=0 or issues if N=1 and alpha is extreme for lambda_val
+    if N == 0 : # Should not happen with typical inputs but good for robustness
+        return 0.0, 0
+    
+    # Power allocation constants
+    # lambda_val * E[|h|^2] = alpha * P_total => lambda_val * 2 * N = alpha * P_total
+    lambda_val = (alpha * P_total) / (2 * N) if N > 0 else 0
+    mu_val = (1 - alpha) * P_total
+
+    # Beamforming vector w
+    w = np.sqrt(lambda_val) * h # Shape (N, 1)
+
+    # Artificial noise vector z
+    if N > 1:
+        # Null space of h_H (1xN) gives vectors orthogonal to h.
+        # h_H x = 0. Basis for null space will be N-1 vectors if h is not zero.
+        gamma_basis = null_space(h_H) # Basis vectors are columns, shape (N, N-1)
+        
+        if gamma_basis.shape[1] < (N - 1): 
+            # This case implies h might be nearly zero or some numerical issue.
+            # Fallback: no AN if proper null space dimension not found.
+            z = np.zeros((N,1))
+        else:
+            # Create a random vector in the null space
+            # v ~ CN(0, I_{N-1}/(N-1)) from description for normalized gamma_v effectively.
+            # Here, using random normal and then normalizing gamma_v achieves this.
+            v_rand = (np.random.randn(N - 1, 1) + 1j * np.random.randn(N - 1, 1)) / np.sqrt(2) # Each element var 1
+            gamma_v = gamma_basis @ v_rand # Shape (N, 1)
+            norm_gamma_v = np.linalg.norm(gamma_v)
+            
+            if norm_gamma_v > 1e-9:
+                z = np.sqrt(mu_val) * (gamma_v / norm_gamma_v) # Shape (N, 1)
+            else: # gamma_v is zero (e.g. if v_rand was zero, or numerical precision)
+                z = np.zeros((N,1))
+    else: # N=1, null space is trivial (zero vector)
+        z = np.zeros((N, 1))
+
+    # Calculate Secrecy Rate
+    # Bob's side
+    signal_power_bob = np.abs(h_H @ w)**2 # Scalar
+    R_b = np.log2(1 + signal_power_bob / sigma_n_sq_val)
+
+    # Eve's side (averaged over M_g_sims realizations of g)
+    R_e_sum = 0.0
+    # Check if w or z are effectively zero to avoid issues or save computation
+    w_is_zero = np.linalg.norm(w) < 1e-9
+    z_is_zero = N <= 1 or np.linalg.norm(z) < 1e-9
+    
+    if w_is_zero: # If no signal beamformed, R_s is 0
+        R_s = 0.0
+    else:
+        for _ in range(M_g_sims):
+            g = generate_channel_vector(N) # Shape (N, 1)
+            g_H = g.conj().T # Shape (1, N)
+            
+            signal_power_eve = np.abs(g_H @ w)**2 # Scalar
+            
+            if z_is_zero: # No artificial noise
+                R_e_sum += np.log2(1 + signal_power_eve / sigma_n_sq_val)
+            else: # With artificial noise
+                noise_power_eve_an = np.abs(g_H @ z)**2 # Scalar
+                total_noise_eve = noise_power_eve_an + sigma_n_sq_val
+                R_e_sum += np.log2(1 + signal_power_eve / (total_noise_eve if total_noise_eve > 1e-9 else 1e-9))
+        
+        R_e = R_e_sum / M_g_sims if M_g_sims > 0 else 0.0
+        R_s = np.maximum(0.0, R_b - R_e)
+
+    event_rs_greater_R = 1 if R_s > R_thresh else 0
+    return float(R_s), event_rs_greater_R 
+
+# phy_sec_simulation\strategies\strategy_3_2.py
+import numpy as np
+from scipy.linalg import null_space
+from .utils import generate_channel_vector
+
+def strategy_3_2(P_total, N, alpha, sigma_n_sq_val, M_g_sims, R_thresh):
+    """
+    Implements Strategy 3.2.
+    Beamforming w = sqrt(lambda) * h
+    Artificial Noise z = sqrt(mu) * |h| * gamma_v / ||gamma_v||
+    E[|w|^2] = alpha * P_total
+    E[|z|^2] = (1 - alpha) * P_total
+    h is from generate_channel_vector, so E[|h|^2] = 2N
+    lambda_val = alpha * P_total / (2N)
+    mu_val = (1-alpha) * P_total / (2N)
+    """
+    h = generate_channel_vector(N) # Shape (N, 1), E[|h|^2] = 2N
+    h_H = h.conj().T # Shape (1, N)
+    h_norm_sq = np.abs(np.vdot(h, h)) # Scalar, |h|^2
+
+    if h_norm_sq < 1e-9 or N == 0: # N=0 check for robustness
+        return 0.0, 0
+
+    # Power allocation constants
+    # lambda_val * E[|h|^2] = alpha * P_total => lambda_val * 2 * N = alpha * P_total
+    lambda_val = (alpha * P_total) / (2 * N) if N > 0 else 0
+    # mu_val * E[|h|^2] = (1-alpha) * P_total => mu_val * 2 * N = (1-alpha) * P_total
+    mu_val = ((1 - alpha) * P_total) / (2 * N) if N > 0 else 0
+
+    # Beamforming vector w
+    w = np.sqrt(lambda_val) * h # Shape (N, 1)
+
+    # Artificial noise vector z
+    if N > 1:
+        gamma_basis = null_space(h_H) # Shape (N, N-1)
+        
+        if gamma_basis.shape[1] < (N - 1):
+            z = np.zeros((N,1))
+        else:
+            v_rand = (np.random.randn(N - 1, 1) + 1j * np.random.randn(N - 1, 1)) / np.sqrt(2)
+            gamma_v = gamma_basis @ v_rand # Shape (N, 1)
+            norm_gamma_v = np.linalg.norm(gamma_v)
+            
+            if norm_gamma_v > 1e-9:
+                # Key difference from 3.1: scaling by |h|
+                z = np.sqrt(mu_val) * np.sqrt(h_norm_sq) * (gamma_v / norm_gamma_v) # Shape (N, 1)
+            else:
+                z = np.zeros((N,1))
+    else: # N=1
+        z = np.zeros((N, 1))
+
+    # Calculate Secrecy Rate
+    signal_power_bob = np.abs(h_H @ w)**2
+    R_b = np.log2(1 + signal_power_bob / sigma_n_sq_val)
+
+    R_e_sum = 0.0
+    w_is_zero = np.linalg.norm(w) < 1e-9
+    z_is_zero = N <= 1 or np.linalg.norm(z) < 1e-9
+
+    if w_is_zero:
+        R_s = 0.0
+    else:
+        for _ in range(M_g_sims):
+            g = generate_channel_vector(N)
+            g_H = g.conj().T
+            
+            signal_power_eve = np.abs(g_H @ w)**2
+            
+            if z_is_zero:
+                R_e_sum += np.log2(1 + signal_power_eve / sigma_n_sq_val)
+            else:
+                noise_power_eve_an = np.abs(g_H @ z)**2
+                total_noise_eve = noise_power_eve_an + sigma_n_sq_val
+                R_e_sum += np.log2(1 + signal_power_eve / (total_noise_eve if total_noise_eve > 1e-9 else 1e-9))
+        
+        R_e = R_e_sum / M_g_sims if M_g_sims > 0 else 0.0
+        R_s = np.maximum(0.0, R_b - R_e)
+
+    event_rs_greater_R = 1 if R_s > R_thresh else 0
+    return float(R_s), event_rs_greater_R 
+
+# phy_sec_simulation\strategies\utils.py
+import numpy as np
+
+def generate_channel_vector(N):
+    """Generates a complex channel vector h ~ CN(0, 2I_N)."""
+    real_part = np.random.normal(0, 1, (N, 1))
+    imag_part = np.random.normal(0, 1, (N, 1))
+    return (real_part + 1j * imag_part)
+
+def db_to_linear(db_value):
+    """Converts dB to linear scale."""
+    return 10**(db_value / 10)
+
+def snr_to_total_power(snr_db, noise_variance):
+    """Calculates total power P from SNR in dB."""
+    snr_linear = db_to_linear(snr_db) # Corrected: was using undefined db_value
+    return snr_linear * noise_variance 
+
+# phy_sec_simulation\strategies\variable_power.py
+import numpy as np
+from scipy.linalg import null_space
+from .utils import generate_channel_vector
+
+def strategy_1_2(P_total, N, alpha, sigma_n_sq_val, M_g_sims, R_thresh):
+    """
+    Implements Strategy 1.2: Variable Power Allocation.
+    Returns instantaneous secrecy rate and outage event (1 if R_s > R_thresh, 0 otherwise).
+    """
+    h = generate_channel_vector(N)
+    h_H = h.conj().T
+    h_norm_sq = np.abs(np.vdot(h, h))
+
+    if h_norm_sq < 1e-9:
+        return 0.0, 0
+
+    lambda_val = 2 * (N - 1) * alpha * P_total
+    mu_val = (P_total - lambda_val/(2*(N-1)))*(2*(N-1))
+
+    w = np.sqrt(lambda_val) * (h / h_norm_sq)
+    
+
+    if N > 1:
+        gamma_basis = null_space(h_H)
+        if gamma_basis.shape[1] < (N-1) and N-1 > 0:
+            z = np.zeros((N,1))
+        elif gamma_basis.shape[1] == 0 and N > 1:
+            z = np.zeros((N,1))
+        else:
+            v_for_gamma_v = (np.random.randn(N - 1, 1) + 1j * np.random.randn(N - 1, 1)) / np.sqrt(2 * (N - 1))
+            gamma_v = gamma_basis @ v_for_gamma_v
+            # Key difference: scaling by 1/|h| (i.e. 1/sqrt(h_norm_sq))
+            z = np.sqrt(mu_val) * (gamma_v / np.sqrt(h_norm_sq)) 
+    else: # N=1
+        z = np.zeros((N, 1))
+
+    signal_power_bob = np.abs(h_H @ w)**2
+    R_b = np.log2(1 + signal_power_bob / sigma_n_sq_val)
+
+    R_s = 0.0 # Default R_s
+    R_e_sum = 0.0
+    if np.linalg.norm(w) < 1e-9:
+        R_s = 0.0
+    elif (N > 1 and np.linalg.norm(z) < 1e-9) or N == 1:
+        for _ in range(M_g_sims):
+            g = generate_channel_vector(N)
+            g_H = g.conj().T
+            signal_power_eve = np.abs(g_H @ w)**2
+            R_e_sum += np.log2(1 + signal_power_eve / sigma_n_sq_val)
+    else: # General case with AN (N > 1 and z is non-zero)
+        for _ in range(M_g_sims):
+            g = generate_channel_vector(N)
+            g_H = g.conj().T
+            signal_power_eve = np.abs(g_H @ w)**2
+            noise_power_eve = np.abs(g_H @ z)**2 + sigma_n_sq_val
+            R_e_sum += np.log2(1 + signal_power_eve / (noise_power_eve if noise_power_eve > 1e-9 else 1e-9))
+            
+    if np.linalg.norm(w) >= 1e-9:
+        R_e = R_e_sum / M_g_sims if M_g_sims > 0 else 0.0
+        R_s = np.maximum(0.0, R_b - R_e)
+
+    event_rs_greater_R = 1 if R_s > R_thresh else 0 # Corrected logic for Pr(R_s > R)
+    return float(R_s), event_rs_greater_R 
+
+# phy_sec_simulation\strategies\__init__.py
+from .utils import generate_channel_vector, db_to_linear, snr_to_total_power
+from .constant_power import strategy_1
+from .variable_power import strategy_1_2
+from .strategy_2_constant_inst_power import strategy_2_constant_inst_power
+from .strategy_3_1 import strategy_3_1
+from .strategy_3_2 import strategy_3_2
+
+__all__ = [
+    'generate_channel_vector',
+    'db_to_linear',
+    'snr_to_total_power',
+    'strategy_1',
+    'strategy_1_2',
+    'strategy_2_constant_inst_power',
+    'strategy_3_1',
+    'strategy_3_2'
+] 
+
